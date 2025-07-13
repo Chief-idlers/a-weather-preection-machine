@@ -1,0 +1,298 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "491a501c-afec-46b4-8ee3-be71ee516eda",
+   "metadata": {},
+   "source": [
+    "# Download Data\n",
+    "\n",
+    "* Go to https://www.ncdc.noaa.gov/cdo-web/search\n",
+    "* Enter the years you want data for (I recommend starting with 1970), and search for the closest airport to you\n",
+    "    * <img src=\"imgs/download_1.png\" width=\"500\"/>\n",
+    "* Click add to cart on the airport you want\n",
+    "    * If there is no airport near you, try your city or country name instead\n",
+    "    * <img src=\"imgs/download_2.png\" width=\"500\"/>\n",
+    "* Go to the cart at https://www.ncdc.noaa.gov/cdo-web/cart\n",
+    "* Select the csv format and click continue\n",
+    "    * <img src=\"imgs/download_3.png\" width=\"500\"/>\n",
+    "* Select all of the checkboxes for data types\n",
+    "    * <img src=\"imgs/download_4.png\" width=\"500\"/>\n",
+    "* Enter your email and click continue\n",
+    "    * <img src=\"imgs/download_5.png\" width=\"500\"/>\n",
+    "* You'll get an email with a link to download the data\n",
+    "    * <img src=\"imgs/download_6.png\" width=\"500\"/>\n",
+    "* Make sure to take a look at the [data documentation](https://www1.ncdc.noaa.gov/pub/data/cdo/documentation/GHCND_documentation.pdf) as well"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "70e571c4-1f59-4b6c-9a3e-a81b0e9a7d47",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "from sklearn.ensemble import RandomForestRegressor\n",
+    "from sklearn.model_selection import TimeSeriesSplit\n",
+    "from sklearn.metrics import mean_absolute_error\n",
+    "import matplotlib.pyplot as plt\n",
+    "\n",
+    "weather = pd.read_csv(\"local_weather.csv\", index_col=\"DATE\", parse_dates=True)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "9e1bcb16-b985-46a0-8347-2f93cbbb2674",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Display the dataset\n",
+    "weather"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "265befae-8b24-422c-82d9-ccfa8f708b88",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Check for missing values\n",
+    "weather.apply(pd.isnull).sum() / weather.shape[0]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "e5be1bcd-0b68-47d7-8c56-b8299fe54e66",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Select core columns and rename them\n",
+    "core_weather = weather[[\"PRCP\", \"SNOW\", \"SNWD\", \"TMAX\", \"TMIN\", \"AWND\", \"WT01\"]].copy()\n",
+    "core_weather.columns = [\"precip\", \"snow\", \"snow_depth\", \"temp_max\", \"temp_min\", \"wind_speed\", \"fog\"]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "2d32ee77-7cf2-491a-889c-a5da1d3afa9a",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Check missing values in core_weather\n",
+    "core_weather.apply(pd.isnull).sum()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "1816ed63-e162-4567-a19d-a42fb8b13448",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Drop snow and snow_depth due to low variability in Oakland\n",
+    "core_weather[\"snow\"].value_counts()\n",
+    "core_weather[\"snow_depth\"].value_counts()\n",
+    "del core_weather[\"snow\"]\n",
+    "del core_weather[\"snow_depth\"]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "63001050-a478-40f5-a03e-f11c3b8271d3",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Handle missing values\n",
+    "core_weather[\"precip\"] = core_weather[\"precip\"].fillna(0)  # Assume no precipitation if missing\n",
+    "core_weather[\"temp_max\"] = core_weather[\"temp_max\"].interpolate()  # Linear interpolation\n",
+    "core_weather[\"temp_min\"] = core_weather[\"temp_min\"].interpolate()\n",
+    "core_weather[\"wind_speed\"] = core_weather[\"wind_speed\"].interpolate()\n",
+    "core_weather[\"fog\"] = core_weather[\"fog\"].fillna(0)  # Assume no fog if missing"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a5eb8a8f-95bb-47a4-a97b-c7e45fb2763e",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Create additional predictors\n",
+    "core_weather[\"temp_range\"] = core_weather[\"temp_max\"] - core_weather[\"temp_min\"]\n",
+    "core_weather[\"rolling_avg_temp\"] = core_weather[\"temp_max\"].rolling(window=7).mean()\n",
+    "core_weather[\"monthly_avg\"] = core_weather.groupby(core_weather.index.month)[\"temp_max\"].transform(lambda x: x.expanding(1).mean())\n",
+    "core_weather[\"day_of_year_avg\"] = core_weather.groupby(core_weather.index.day_of_year)[\"temp_max\"].transform(lambda x: x.expanding(1).mean())\n",
+    "core_weather[\"day_sin\"] = np.sin(2 * np.pi * core_weather.index.day_of_year / 365.25)\n",
+    "core_weather[\"day_cos\"] = np.cos(2 * np.pi * core_weather.index.day_of_year / 365.25)\n",
+    "\n",
+    "# Create target variable (next day's temp_max)\n",
+    "core_weather[\"target\"] = core_weather[\"temp_max\"].shift(-1)\n",
+    "\n",
+    "# Drop rows with NaN values (e.g., last row due to shift)\n",
+    "core_weather = core_weather.dropna()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "81b0144b-fbad-4da2-b27d-8aa591bb0189",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Create month_max and month_day_max for compatibility with original predictors\n",
+    "core_weather[\"month_max\"] = core_weather.groupby(core_weather.index.month)[\"temp_max\"].transform(\"mean\")\n",
+    "core_weather[\"month_day_max\"] = core_weather.groupby([core_weather.index.month, core_weather.index.day])[\"temp_max\"].transform(\"mean\")\n",
+    "core_weather[\"max_min\"] = core_weather[\"temp_max\"] / (core_weather[\"temp_min\"] + 1e-6)  # Avoid division by zero\n",
+    "\n",
+    "# Define predictors\n",
+    "predictors = [\"precip\", \"temp_max\", \"temp_min\", \"wind_speed\", \"fog\", \"temp_range\", \n",
+    "              \"rolling_avg_temp\", \"month_max\", \"month_day_max\", \"max_min\", \n",
+    "              \"monthly_avg\", \"day_of_year_avg\", \"day_sin\", \"day_cos\"]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "60646af1-5cc3-4718-9931-ecdaffa5680b",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Define prediction function with backtesting\n",
+    "def create_predictions(predictors, data, model, n_splits=5):\n",
+    "    tscv = TimeSeriesSplit(n_splits=n_splits)\n",
+    "    errors = []\n",
+    "    all_predictions = []\n",
+    "    all_actuals = []\n",
+    "    \n",
+    "    for train_idx, test_idx in tscv.split(data):\n",
+    "        train_data = data.iloc[train_idx]\n",
+    "        test_data = data.iloc[test_idx]\n",
+    "        \n",
+    "        model.fit(train_data[predictors], train_data[\"target\"])\n",
+    "        predictions = model.predict(test_data[predictors])\n",
+    "        error = mean_absolute_error(test_data[\"target\"], predictions)\n",
+    "        errors.append(error)\n",
+    "        \n",
+    "        # Store predictions and actuals\n",
+    "        combined = pd.DataFrame({\n",
+    "            \"actual\": test_data[\"target\"],\n",
+    "            \"predictions\": predictions\n",
+    "        }, index=test_data.index)\n",
+    "        all_predictions.append(combined)\n",
+    "        all_actuals.extend(test_data[\"target\"])\n",
+    "    \n",
+    "    combined = pd.concat(all_predictions)\n",
+    "    return np.mean(errors), combined"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d9882b47-e290-4f3d-bfb3-f6a32d66cae0",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Train Random Forest model\n",
+    "rf_model = RandomForestRegressor(n_estimators=100, random_state=42)\n",
+    "error, combined = create_predictions(predictors, core_weather, rf_model)\n",
+    "print(f\"Random Forest MAE: {error}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "c29d4f86-834a-4fc1-b010-b8ed8e8da76e",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Feature importance\n",
+    "feature_importance = pd.Series(rf_model.feature_importances_, index=predictors)\n",
+    "print(\"Feature Importance:\\n\", feature_importance.sort_values(ascending=False))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "145833c6-7c7a-44ae-affb-c02f227c4398",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Correlation with target\n",
+    "print(\"Correlation with Target:\\n\", core_weather[predictors + [\"target\"]].corr()[\"target\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "5dde8c0a-b90d-494d-a084-1bb9c4d81ca5",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Calculate absolute difference\n",
+    "combined[\"diff\"] = (combined[\"actual\"] - combined[\"predictions\"]).abs()\n",
+    "print(\"Top 10 Prediction Errors:\\n\", combined.sort_values(\"diff\", ascending=False).head(10))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "398ac252-59ea-4d97-9347-d2359843e944",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Visualize actual vs predicted\n",
+    "plt.figure(figsize=(12, 6))\n",
+    "plt.plot(combined.index, combined[\"actual\"], label=\"Actual\", alpha=0.7)\n",
+    "plt.plot(combined.index, combined[\"predictions\"], label=\"Predicted\", alpha=0.7)\n",
+    "plt.title(\"Actual vs Predicted Maximum Temperature (Oakland, CA)\")\n",
+    "plt.xlabel(\"Date\")\n",
+    "plt.ylabel(\"Temperature (°F)\")\n",
+    "plt.legend()\n",
+    "plt.grid(True)\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "9ab85461-e4d6-47f3-93cc-7f7f57b766e7",
+   "metadata": {},
+   "source": [
+    "# Next Steps\n",
+    "\n",
+    "* Predict weather for entire next week versus a single day using multi-output models (e.g., MultiOutputRegressor).\n",
+    "* Incorporate data from nearby weather stations (e.g., San Francisco, San Jose) to capture regional patterns.\n",
+    "* Experiment with advanced models like Gradient Boosting (XGBoost, LightGBM) or LSTM for time-series forecasting.\n",
+    "* Add more derived predictors, such as precipitation-to-temperature ratios or lagged variables.\n",
+    "* Perform hyperparameter tuning for the Random Forest model to optimize performance.\n",
+    "* Analyze prediction errors by season or weather events to identify model weaknesses."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.9.15"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
